@@ -5,12 +5,9 @@ import threading
 import os
 import tkinter as tk
 from tkinter import ttk
-
-
-try:
-    from pynput.mouse import Listener as GlobalMouseListener
-except Exception:
-    GlobalMouseListener = None
+from pynput.mouse import Listener as GlobalMouseListener
+import cv2
+import numpy as np
 
 
 RIGHT = (1694, 584)
@@ -20,38 +17,65 @@ DOWN = (997, 931)
 DEFAULT_DIRECTIONS = (RIGHT, LEFT, UP, DOWN)
 
 
+#function to convert various position formats to (x, y) tuple
+def to_tuple(p):
+    if isinstance(p, str):
+        s = re.sub("[() ]", "", p)
+        x, y = s.split(",")
+        return (int(x), int(y))
+    if hasattr(p, "x") and hasattr(p, "y"):
+        return (int(p.x), int(p.y))
+    if isinstance(p, (tuple, list)):
+        return (int(p[0]), int(p[1]))
+    raise ValueError("Unsupported position format")
 
-def get_final_placements():
-    print("Move your mouse to the target and wait...")
-    time.sleep(3)
-    pos = pyautogui.position()
-    print("Position is captured  ------>", pos)
-    return pos
+
+def is_detected(dark_threshold=0.6, dark_pixel_tol=60):
+    try:
+        scr = pyautogui.screenshot()
+        arr = None
+        try:
+            arr = np.array(scr.convert('L')) 
+        except Exception:
+            gray = scr.convert('L')
+            arr = list(gray.getdata())
+            w, h = gray.size
+            arr = [arr[i * w:(i + 1) * w] for i in range(h)]
+            dark = 0
+            total = 0
+            for row in arr:
+                for v in row:
+                    total += 1
+                    if v < dark_pixel_tol:
+                        dark += 1
+            if total == 0:
+                return True
+            return (dark / total) < dark_threshold
+
+        total = arr.size
+        if total == 0:
+            return True
+        dark = int((arr < dark_pixel_tol).sum())
+        dark_ratio = dark / total
+        return dark_ratio < dark_threshold
+    except Exception:
+        return True
 
 
-def given_position(current_pos, target_pos, directions):
-    def to_tuple(p):
-        if isinstance(p, str):
-            s = re.sub("[() ]", "", p)
-            x, y = s.split(",")
-            return (int(x), int(y))
-        if hasattr(p, "x") and hasattr(p, "y"):
-            return (int(p.x), int(p.y))
-        if isinstance(p, (tuple, list)):
-            return (int(p[0]), int(p[1]))
-        raise ValueError("Unsupported position format: %r" % (p,))
+def move(current_pos, target_pos, directions, wait=2):
 
-    #norm input
     current = to_tuple(current_pos)
     target = to_tuple(target_pos)
-    if not directions or len(directions) != 4:
-        raise ValueError("Directions (right,left,up,down) must be provided")
-
     right, left, up, down = directions
+    # the perso appearing is stable so a pic detection should be added
 
     cx, cy = current
     tx, ty = target
     while (cx, cy) != (tx, ty):
+
+        while not is_detected():
+            time.sleep(wait)
+
         if cx < tx:
             pyautogui.click(right)
             cx += 1
@@ -60,6 +84,10 @@ def given_position(current_pos, target_pos, directions):
             pyautogui.click(left)
             cx -= 1
             time.sleep(5)
+        
+        while not is_detected():
+            time.sleep(wait)
+
         if cy < ty:
             pyautogui.click(down)
             cy += 1
@@ -72,10 +100,10 @@ def given_position(current_pos, target_pos, directions):
 
 
 class App:
+
     def __init__(self, root):
         self.root = root
         root.title("Position Controller")
-
         self.current_pos = None
         self.target_pos = None
         self.directions = DEFAULT_DIRECTIONS
@@ -111,7 +139,7 @@ class App:
         self.play_file_btn = ttk.Button(main, text="Play Placements", command=self.play_placements)
         self.play_file_btn.grid(column=0, row=8, columnspan=2, pady=(8, 0))
 
-        ttk.Label(main, text="Diff filename:").grid(column=0, row=9, sticky=tk.W)
+        ttk.Label(main, text="Filename:").grid(column=0, row=9, sticky=tk.W)
         self.diff_file_entry = ttk.Entry(main)
         self.diff_file_entry.insert(0, 'placements/placements.txt')
         self.diff_file_entry.grid(column=1, row=9, sticky=(tk.W, tk.E))
@@ -131,41 +159,7 @@ class App:
             child.grid_configure(padx=6, pady=6)
 
 
-    def capture_directions(self):
-        if GlobalMouseListener is None:
-            self.dirs_label.config(text="pynput not installed — cannot capture global clicks")
-            return
-        self._dir_clicks = []
-        self.dirs_label.config(text="Click anywhere on screen 4 times: RIGHT, LEFT, UP, DOWN")
-        self.capture_dirs_btn.config(text="Listening...")
-        self.capture_dirs_btn.state(['disabled'])
-        self.start_btn.state(['disabled'])
-
-        def on_click(x, y, button, pressed):
-            if not pressed:
-                return
-            self._dir_clicks.append((int(x), int(y)))
-            count = len(self._dir_clicks)
-            self.root.after(0, lambda: self.dirs_label.config(text=f"Captured {count}/4: {(int(x), int(y))}"))
-            if count >= 4:
-                listener.stop()
-                self.directions = tuple(self._dir_clicks[:4])
-                def finish():
-                    self.dirs_label.config(text=f"Directions set: R{self.directions[0]} L{self.directions[1]} U{self.directions[2]} D{self.directions[3]}")
-                    self.capture_dirs_btn.config(text="Capture Directions")
-                    self.capture_dirs_btn.state(['!disabled'])
-                    self.start_btn.state(['!disabled'])
-                self.root.after(0, finish)
-        listener = GlobalMouseListener(on_click=on_click)
-        listener.start()
-
-    def _on_dir_click(self, event):
-        return
-
     def start_diff_capture(self):
-        if GlobalMouseListener is None:
-            self.dirs_label.config(text="pynput not installed — cannot capture global clicks")
-            return
         self._diff_clicks = []
         self.capture_diff_btn.state(['disabled'])
         self.stop_diff_btn.state(['!disabled'])
@@ -305,7 +299,7 @@ class App:
             print("Directions not captured. Please use 'Capture Directions' once before starting.")
             return
 
-        t = threading.Thread(target=given_position, args=(cur, tgt, self.directions), daemon=True)
+        t = threading.Thread(target=move, args=(cur, tgt, self.directions), daemon=True)
         t.start()
 
 
