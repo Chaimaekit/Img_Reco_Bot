@@ -3,3 +3,4 @@ pynput
 opencv-python
 pillow
 numpy
+scikit-image
